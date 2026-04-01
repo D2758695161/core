@@ -1,0 +1,25 @@
+id: ws-reconnect
+title: WebSocket Reconnect State Machine
+description: >
+  Refactor the reconnect logic in src/network/index.ts. Currently uses basic
+  retry with WS_RECONNECT_BASE_MS/WS_RECONNECT_MAX_MS constants. Replace with
+  a state machine (connecting, connected, disconnecting, disconnected,
+  reconnecting) and exponential backoff with jitter. Base 1s, 2x multiplier,
+  max 30s, random jitter 0-1s. Max attempts configurable (default 10). Emit
+  typed events for state transitions and a "failed" event after max attempts.
+module: network
+files_to_modify:
+  - src/network/index.ts
+tests:
+  - tests/network.test.ts
+acceptance:
+  - Connection states are connecting, connected, disconnecting, disconnected, reconnecting
+  - Backoff doubles each attempt starting from 1s, capped at 30s
+  - Jitter is random 0-1s added to each backoff delay
+  - Max attempts configurable, defaults to 10
+  - "failed" event emitted after max attempts exhausted
+  - State transitions emit typed events
+  - tests/network.test.ts includes reconnect tests and passes
+points: 500
+difficulty: hard
+status: open

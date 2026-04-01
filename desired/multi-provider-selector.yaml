@@ -1,0 +1,25 @@
+id: multi-provider-selector
+title: Multi-Provider Selector Module
+description: >
+  Create src/consumer/selector.ts that selects a provider from a list based on
+  model availability, latency, and capacity. The consumer in src/consumer/index.ts
+  currently connects to a single hardcoded provider. Add a ProviderSelector class
+  that accepts a provider list, scores them, and returns the best match. On error,
+  fall back to the next provider in ranked order.
+module: consumer
+files_to_create:
+  - src/consumer/selector.ts
+files_to_modify:
+  - src/consumer/index.ts
+tests:
+  - tests/selector.test.ts
+acceptance:
+  - src/consumer/selector.ts exports a ProviderSelector class
+  - ProviderSelector.select(model) returns the highest-scored available provider
+  - On provider error, ProviderSelector.next() returns the next ranked provider
+  - Selection considers model match, latency (lower is better), and capacity (higher is better)
+  - tests/selector.test.ts exists and passes with npm test
+  - src/consumer/index.ts uses ProviderSelector instead of direct provider reference
+points: 500
+difficulty: medium
+status: open

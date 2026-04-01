@@ -1,0 +1,26 @@
+id: e2e-failure-scenarios
+title: E2E Test Coverage for Failure Scenarios
+description: >
+  Expand tests/e2e.test.ts with failure scenario coverage. The existing file
+  has happy-path tests using an in-process setup (consumer, relay, provider
+  started together). Add tests for: auth failure (bad signing key rejected by
+  relay), provider offline (consumer gets error, not hang), encryption
+  verification (relay never sees plaintext prompt), and streaming (SSE chunks
+  flow end-to-end). All tests must use port 0 for random ports and complete
+  within 10 seconds total.
+module: tests
+files_to_modify:
+  - tests/e2e.test.ts
+tests:
+  - tests/e2e.test.ts
+acceptance:
+  - Test exists for auth failure with bad signing key, asserts relay rejects
+  - Test exists for provider offline, asserts consumer gets error within timeout
+  - Test exists verifying relay does not see plaintext prompt content
+  - Test exists for streaming SSE chunks flowing end-to-end
+  - All e2e tests use port 0 (random port assignment)
+  - Total e2e test suite completes in under 10 seconds
+  - npm test passes with all new and existing tests
+points: 500
+difficulty: hard
+status: open

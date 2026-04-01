@@ -1,0 +1,32 @@
+id: structured-logging
+title: Unified Structured Logger
+description: >
+  Create src/logger.ts (under 100 lines, no external dependencies) providing
+  debug/info/warn/error methods. Output format: JSON lines with ts, level,
+  module, msg, and optional context fields. When stdout is a TTY and
+  VEIL_LOG_FORMAT is not "json", output human-readable colored lines instead.
+  VEIL_LOG_LEVEL env var filters output (default: info). Replace all
+  console.log calls in src/ with the new logger.
+module: core
+files_to_create:
+  - src/logger.ts
+files_to_modify:
+  - src/consumer/index.ts
+  - src/provider/index.ts
+  - src/relay/index.ts
+  - src/network/index.ts
+  - src/cli.ts
+tests:
+  - tests/logger.test.ts
+acceptance:
+  - src/logger.ts exports createLogger(module) returning debug/info/warn/error methods
+  - JSON mode outputs one JSON object per line with ts, level, module, msg fields
+  - Human mode outputs colored lines with timestamp and level
+  - VEIL_LOG_LEVEL=warn suppresses debug and info output
+  - No console.log calls remain in src/ (all replaced with logger)
+  - src/logger.ts is under 100 lines
+  - No external dependencies added
+  - tests/logger.test.ts exists and passes
+points: 600
+difficulty: hard
+status: open

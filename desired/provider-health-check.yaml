@@ -1,0 +1,22 @@
+id: provider-health-check
+title: Provider Health Check Endpoint
+description: >
+  Add a GET /health route to the provider HTTP server in src/provider/index.ts.
+  The endpoint returns JSON with fields: status, uptime (seconds since start),
+  models (array from config), capacity (current/max connections), and version
+  (from package.json). No external calls -- response must be under 10ms.
+module: provider
+files_to_modify:
+  - src/provider/index.ts
+tests:
+  - tests/provider.test.ts
+acceptance:
+  - GET /health returns HTTP 200 with Content-Type application/json
+  - Response body contains status, uptime, models, capacity, version fields
+  - uptime is a number reflecting seconds since server start
+  - models array matches the provider's configured model list
+  - No external network calls in the handler
+  - tests/provider.test.ts includes health check tests and passes
+points: 300
+difficulty: easy
+status: open
