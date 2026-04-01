@@ -7,6 +7,7 @@ import { MODEL_MAP, RETRY_CONFIG } from '../config/bootstrap.js';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { MetricsStore } from './metrics.js';
+import { sendRequest, selectAdapter, getAllModels } from './adapters/index.js';
 import type { Connection } from '../network/index.js';
 import type { Wallet } from '../wallet/index.js';
 import type {
@@ -24,7 +25,7 @@ const MULTI_RELAY_COUNT = 3;
 export interface ProviderOptions {
   wallet: Wallet;
   relayUrl: string;
-  apiKeys: Array<{ provider: 'anthropic'; key: string }>;
+  apiKeys: Array<{ provider: 'anthropic' | 'openai' | 'google'; key: string }>;
   maxConcurrent: number;
   proxyUrl?: string;      // e.g. http://127.0.0.1:4000
   proxySecret?: string;   // shared secret for proxy auth
@@ -38,15 +39,6 @@ export interface HandleRequestResult {
   finish_reason: string;
 }
 
-function getRetryDelay(attempt: number): number {
-  const base = Math.min(
-    RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
-    RETRY_CONFIG.maxDelayMs,
-  );
-  const jitter = base * RETRY_CONFIG.jitterFactor * (Math.random() * 2 - 1);
-  return Math.max(0, base + jitter);
-}
-
 export async function handleRequest(
   inner: InnerPlaintext,
   apiKey: string,
@@ -54,167 +46,30 @@ export async function handleRequest(
   apiBase?: string,
   proxySecret?: string,
 ): Promise<HandleRequestResult> {
-  const anthropicModel = MODEL_MAP[inner.model] ?? inner.model;
-
-  const systemMessage = inner.messages.find((m) => m.role === 'system');
-  const nonSystemMessages = inner.messages.filter((m) => m.role !== 'system');
-
-  const anthropicRequest: Record<string, unknown> = {
-    model: anthropicModel,
-    max_tokens: inner.max_tokens,
-    messages: nonSystemMessages,
-    temperature: inner.temperature,
-    top_p: inner.top_p,
-    stream: inner.stream,
-  };
-
-  if (systemMessage) {
-    anthropicRequest.system = systemMessage.content;
-  }
-  if (inner.stop_sequences.length > 0) {
-    anthropicRequest.stop_sequences = inner.stop_sequences;
-  }
-
-  log.debug('anthropic_req', { body: anthropicRequest });
-  const url = (apiBase ?? 'https://api.anthropic.com') + '/v1/messages';
-  const isOAuthToken = apiKey.includes('sk-ant-oat');
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
-    'anthropic-version': '2023-06-01',
-  };
-  
-  if (proxySecret) {
-    headers['x-proxy-secret'] = proxySecret;
-  } else if (isOAuthToken) {
-    // OAuth/setup-token: use Bearer auth + Claude Code headers
-    headers['Authorization'] = `Bearer ${apiKey}`;
-    headers['anthropic-beta'] = 'claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14';
-    headers['anthropic-dangerous-direct-browser-access'] = 'true';
-    headers['user-agent'] = 'claude-cli/2.1.75';
-    headers['x-app'] = 'cli';
-    headers['accept'] = 'application/json';
-  } else {
-    // Standard API key
-    headers['x-api-key'] = apiKey;
-  }
-  
-  // OAuth tokens require Claude Code system prompt
-  if (isOAuthToken && !anthropicRequest.system) {
-    anthropicRequest.system = [{ type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." }];
-  } else if (isOAuthToken && typeof anthropicRequest.system === 'string') {
-    anthropicRequest.system = [
-      { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
-      { type: 'text', text: anthropicRequest.system },
-    ];
-  }
-
-  let lastError: Error | null = null;
-  for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, getRetryDelay(attempt - 1)));
-    }
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(anthropicRequest),
-      });
-    } catch (err) {
-      lastError = err as Error;
-      continue;
-    }
-
-    log.debug('anthropic_status', { status: res.status });
-    if (res.status === 429 || res.status === 529 || res.status === 500) {
-      lastError = new Error(`anthropic_${res.status}`);
-      if (attempt < RETRY_CONFIG.maxRetries) continue;
-      throw lastError;
-    }
-
-    if (res.status === 400) {
-      const errBody = await res.text(); log.debug('anthropic_400', { body: errBody }); const body = JSON.parse(errBody) as { error?: { message?: string } };
-      throw new Error(body.error?.message ?? 'invalid_request');
-    }
-
-    if (res.status === 401) {
-      throw new Error('upstream_auth');
-    }
-
-    if (!inner.stream) {
-      const body = await res.json() as {
-        content: Array<{ text: string }>;
-        usage: { input_tokens: number; output_tokens: number };
-        stop_reason: string;
-      };
-      return {
-        content: body.content.map((c) => c.text).join(''),
-        usage: body.usage,
-        finish_reason: body.stop_reason === 'end_turn' ? 'stop' : body.stop_reason === 'max_tokens' ? 'length' : 'stop',
-      };
-    }
-
-    // Streaming
-    if (!res.body) throw new Error('no_response_body');
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let content = '';
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let finishReason = 'stop';
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data) continue;
-
-        let event: { type: string; message?: { usage?: { input_tokens: number } }; delta?: { type?: string; text?: string; stop_reason?: string }; usage?: { output_tokens: number } };
-        try {
-          event = JSON.parse(data);
-        } catch {
-          continue;
-        }
-
-        switch (event.type) {
-          case 'message_start':
-            inputTokens = event.message?.usage?.input_tokens ?? 0;
-            break;
-          case 'content_block_delta':
-            if (event.delta?.type === 'text_delta' && event.delta.text) {
-              content += event.delta.text;
-              onChunk?.(event.delta.text);
-            }
-            break;
-          case 'message_delta':
-            outputTokens = event.usage?.output_tokens ?? 0;
-            if (event.delta?.stop_reason === 'end_turn') finishReason = 'stop';
-            else if (event.delta?.stop_reason === 'max_tokens') finishReason = 'length';
-            break;
-        }
-      }
-    }
-
-    return { content, usage: { input_tokens: inputTokens, output_tokens: outputTokens }, finish_reason: finishReason };
-  }
-
-  throw lastError ?? new Error('max_retries_exceeded');
+  // Use the adapter-based sendRequest for multi-vendor support
+  // The selectAdapter will choose the appropriate adapter based on model prefix
+  log.debug('handle_request', { model: inner.model, adapter: selectAdapter(inner.model).name });
+  return sendRequest(inner, apiKey, onChunk, apiBase, proxySecret);
 }
 
 export async function startProvider(options: ProviderOptions): Promise<{ close(): Promise<void> }> {
   const { wallet, relayUrl, apiKeys, maxConcurrent, proxyUrl, proxySecret, discoveryClient } = options;
-  const apiKey = proxyUrl ? 'proxy' : apiKeys.find((k) => k.provider === 'anthropic')?.key;
-  if (!apiKey && !proxyUrl) throw new Error('No Anthropic API key or proxy configured');
   const apiBase = proxyUrl ?? undefined;
+  
+  // Helper to select API key based on model
+  function selectApiKeyForModel(model: string): string {
+    if (proxyUrl) return 'proxy';
+    const adapter = selectAdapter(model);
+    const providerMap: Record<string, 'anthropic' | 'openai' | 'google'> = {
+      anthropic: 'anthropic',
+      openai: 'openai',
+      google: 'google',
+    };
+    const provider = providerMap[adapter.name] ?? 'anthropic';
+    return apiKeys.find((k) => k.provider === provider)?.key ?? apiKeys[0]?.key ?? '';
+  }
+  
+  if (!proxyUrl && apiKeys.length === 0) throw new Error('No API key or proxy configured');
 
   let activeRequests = 0;
   const metrics = new MetricsStore();
@@ -260,7 +115,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
 
   // Send provider_hello
   function sendProviderHello(c: Connection): void {
-    const models = Object.keys(MODEL_MAP);
+    const models = getAllModels();
     const helloPayload = {
       provider_pubkey: toHex(wallet.signingPublicKey),
       encryption_pubkey: toHex(wallet.encryptionPublicKey),
@@ -390,7 +245,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
         });
 
         let chunkIndex = 1;
-        const result = await handleRequest(inner, apiKey!, (text) => {
+        const result = await handleRequest(inner, selectApiKeyForModel(inner.model), (text) => {
           const sealed = seal(
             new TextEncoder().encode(text),
             new Uint8Array(consumerEncPubkey),
@@ -432,7 +287,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
         });
       } else {
         // Non-streaming mode
-        const result = await handleRequest(inner, apiKey!, undefined, apiBase, proxySecret);
+        const result = await handleRequest(inner, selectApiKeyForModel(inner.model), undefined, apiBase, proxySecret);
         const responseBody = JSON.stringify({
           content: result.content,
           usage: result.usage,
@@ -456,7 +311,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
       log.error('provider_request_error', { error: message });
       const code = message === 'decrypt_failed' ? 'decrypt_failed'
         : message === 'upstream_auth' ? 'api_error'
-        : message.startsWith('anthropic_') ? 'api_error'
+        : message.startsWith('anthropic_') || message.startsWith('openai_') || message.startsWith('google_') ? 'api_error'
         : 'api_error';
       conn.send({
         type: 'error',
@@ -476,7 +331,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
   const healthPort = options.healthPort
     ?? (process.env['VEIL_PROVIDER_HEALTH_PORT'] ? Number(process.env['VEIL_PROVIDER_HEALTH_PORT']) : undefined)
     ?? DEFAULT_HEALTH_PORT;
-  const healthModels = Object.keys(MODEL_MAP);
+  const healthModels = getAllModels();
   const capacity = options.maxConcurrent;
 
   const healthApp = new Hono();
