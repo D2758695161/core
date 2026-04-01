@@ -1,46 +1,58 @@
-export interface RequestPayload {
-  model: string;
-  max_tokens: number;
-  messages: Array<{ role: string; content: string }>;
-  temperature?: number;
-  top_p?: number;
-  stop_sequences?: string[];
-  stream?: boolean;
-}
+import type { InnerPlaintext } from '../../types.js';
 
-export interface Usage {
-  input_tokens: number;
-  output_tokens: number;
-}
-
-export interface RequestResult {
+export interface ProviderAdapterResult {
   content: string;
-  usage: Usage;
+  usage: { input_tokens: number; output_tokens: number };
   finish_reason: string;
 }
 
 export interface ProviderAdapter {
-  /** Human-readable name */
   name: string;
-  /** Provider ID (e.g., 'anthropic', 'openai', 'google') */
-  provider: string;
-  /** List of model IDs this adapter handles */
-  getModels(): string[];
-  /** Whether this adapter handles the given model ID */
-  handles(model: string): boolean;
+  
   /**
-   * Send a request and return the result.
-   * @param payload The request payload
-   * @param apiKey API key for the provider
-   * @param onChunk Optional callback for streaming response chunks
-   * @param apiBase Optional custom API base URL
-   * @param proxySecret Optional proxy secret
+   * Detect if this adapter handles the given model name
    */
-  sendRequest(
-    payload: RequestPayload,
-    apiKey: string,
-    onChunk?: (chunk: string) => void,
-    apiBase?: string,
-    proxySecret?: string,
-  ): Promise<RequestResult>;
+  canHandle(model: string): boolean;
+  
+  /**
+   * Get list of models supported by this adapter
+   */
+  getModels(): string[];
+  
+  /**
+   * Build the upstream request URL
+   * @param apiBase - Base URL for the API
+   * @param model - The model name to use (optional, for adapters that embed model in URL)
+   * @param stream - Whether this is a streaming request (optional)
+   */
+  buildUrl(apiBase?: string, model?: string, stream?: boolean): string;
+  
+  /**
+   * Build request headers for the upstream API
+   */
+  buildHeaders(apiKey: string, proxySecret?: string): Record<string, string>;
+  
+  /**
+   * Transform InnerPlaintext to upstream request body
+   * @param apiKey - Optional API key, used for provider-specific logic like OAuth
+   */
+  buildBody(inner: InnerPlaintext, apiKey?: string): Record<string, unknown>;
+  
+  /**
+   * Parse non-streaming response
+   */
+  parseResponse(res: Response): Promise<ProviderAdapterResult>;
+  
+  /**
+   * Parse streaming response, calling onChunk for each text delta
+   */
+  parseStream(
+    res: Response,
+    onChunk: (chunk: string) => void,
+  ): Promise<ProviderAdapterResult>;
+  
+  /**
+   * Extract usage info from response
+   */
+  extractUsage(data: unknown): { input_tokens: number; output_tokens: number };
 }
