@@ -1,5 +1,8 @@
 import { connect } from '../network/index.js';
 import { open, seal, sign, toHex, fromHex } from '../crypto/index.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('provider');
 import { MODEL_MAP, RETRY_CONFIG } from '../config/bootstrap.js';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
@@ -68,7 +71,7 @@ export async function handleRequest(
     anthropicRequest.stop_sequences = inner.stop_sequences;
   }
 
-  console.log(JSON.stringify({level:"debug",msg:"anthropic_req",body:anthropicRequest}));
+  log.debug('anthropic_req', { body: anthropicRequest });
   const url = (apiBase ?? 'https://api.anthropic.com') + '/v1/messages';
   const isOAuthToken = apiKey.includes('sk-ant-oat');
   const headers: Record<string, string> = {
@@ -119,7 +122,7 @@ export async function handleRequest(
       continue;
     }
 
-    console.log(JSON.stringify({level:"debug",msg:"anthropic_status",status:res.status}));
+    log.debug('anthropic_status', { status: res.status });
     if (res.status === 429 || res.status === 529 || res.status === 500) {
       lastError = new Error(`anthropic_${res.status}`);
       if (attempt < RETRY_CONFIG.maxRetries) continue;
@@ -127,7 +130,7 @@ export async function handleRequest(
     }
 
     if (res.status === 400) {
-      const errBody = await res.text(); console.log(JSON.stringify({level:"debug",msg:"anthropic_400",body:errBody})); const body = JSON.parse(errBody) as { error?: { message?: string } };
+      const errBody = await res.text(); log.debug('anthropic_400', { body: errBody }); const body = JSON.parse(errBody) as { error?: { message?: string } };
       throw new Error(body.error?.message ?? 'invalid_request');
     }
 
@@ -217,9 +220,9 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
       if (msg.type === 'provider_ack') {
         const payload = msg.payload as { status: string; reason?: string };
         if (payload.status === 'rejected') {
-          console.log(JSON.stringify({ level: 'error', msg: 'provider_rejected', reason: payload.reason }));
+          log.error('provider_rejected', { reason: payload.reason });
         } else {
-          console.log(JSON.stringify({ level: 'info', msg: 'provider_accepted' }));
+          log.info('provider_accepted');
         }
         return;
       }
@@ -235,17 +238,17 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
           return;
         }
         handleIncomingRequest(msg).catch((err) => {
-          console.log(JSON.stringify({ level: 'error', msg: 'request_error', error: (err as Error).message }));
+          log.error('request_error', { error: (err as Error).message });
         });
       }
 
       if (msg.type === 'pong') return;
     },
     onClose(code, reason) {
-      console.log(JSON.stringify({ level: 'warn', msg: 'relay_disconnected', code, reason }));
+      log.warn('relay_disconnected', { code, reason });
     },
     onError(err) {
-      console.log(JSON.stringify({ level: 'error', msg: 'relay_error', error: err.message }));
+      log.error('relay_error', { error: err.message });
     },
   });
 
@@ -379,7 +382,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
       }
     } catch (err) {
       const message = (err as Error).message;
-      console.log(JSON.stringify({ level: 'error', msg: 'provider_request_error', error: message, stack: (err as Error).stack?.split('\n').slice(0, 5) }));
+      log.error('provider_request_error', { error: message });
       const code = message === 'decrypt_failed' ? 'decrypt_failed'
         : message === 'upstream_auth' ? 'api_error'
         : message.startsWith('anthropic_') ? 'api_error'
