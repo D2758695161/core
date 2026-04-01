@@ -26,12 +26,14 @@ export interface ProviderHelloPayload {
   encryption_pubkey: string;
   models: string[];
   capacity: number;
+  protocol_version: string;
   signature: string;
 }
 
 export interface ProviderAckPayload {
   status: 'accepted' | 'rejected';
   reason?: string;
+  negotiated_version?: string;
 }
 
 export interface RequestPayload {
