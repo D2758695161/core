@@ -266,6 +266,7 @@ export async function startProvider(options: ProviderOptions): Promise<{ close()
       encryption_pubkey: toHex(wallet.encryptionPublicKey),
       models,
       capacity: 100,
+      protocol_version: PROTOCOL_VERSION.toString(),
     };
     const ts = Date.now();
     const signable = JSON.stringify({ ...helloPayload, timestamp: ts });
